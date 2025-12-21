@@ -15,11 +15,11 @@ jobs:
     steps:
       # Step 1: Checkout code from repository
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       
       # Step 2: Set up Python 3.12
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       
@@ -43,7 +43,7 @@ jobs:
       # Step 6: Upload logs as artifact (optional, for debugging)
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: automation-logs
           path: logs/
