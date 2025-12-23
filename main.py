@@ -1248,17 +1248,18 @@ def update_existing_sheet(spreadsheet_id=None):
             ]
             all_rows.append(row)
         
-        # ✅ FIX: Resize sheet to ensure enough rows before writing
+        # Clear old data first
+        print(f"  Clearing old data from Sheet 1...")
+        worksheet1.clear()
+        
+        # ✅ FIX: Resize sheet to exact number of rows needed (no buffer to avoid leftover data)
         total_rows_needed = len(all_rows)
         print(f"  Resizing Sheet 1 to {total_rows_needed} rows...")
         try:
-            worksheet1.resize(rows=total_rows_needed + 100, cols=len(headers1))  # Add 100 extra rows as buffer
-            logger.info(f"Resized Sheet 1 to {total_rows_needed + 100} rows")
+            worksheet1.resize(rows=total_rows_needed, cols=len(headers1))
+            logger.info(f"Resized Sheet 1 to {total_rows_needed} rows")
         except Exception as e:
             logger.warning(f"Could not resize Sheet 1: {e}. Continuing anyway...")
-        
-        # Clear and write again
-        worksheet1.clear()
         
         # ✅ FIX: Use update() instead of append_rows() for better reliability with large datasets
         # Write in batches using update() with A1 notation
@@ -1304,6 +1305,13 @@ def update_existing_sheet(spreadsheet_id=None):
             # Add delay between batches to avoid rate limiting
             if i + batch_size < len(all_rows):  # Don't delay after last batch
                 time.sleep(SHEETS_BATCH_DELAY)
+        
+        # ✅ FIX: Resize back to exact number of rows to remove any leftover rows
+        try:
+            worksheet1.resize(rows=len(all_rows), cols=len(headers1))
+            logger.info(f"Final resize Sheet 1 to {len(all_rows)} rows to remove leftover data")
+        except Exception as e:
+            logger.warning(f"Could not final resize Sheet 1: {e}. Continuing anyway...")
         
         print(f"✓ Updated Sheet 1: {len(sheet1_data)} rows")
         logger.info(f"Updated Sheet 1: {len(sheet1_data)} rows")
@@ -1375,17 +1383,19 @@ def update_existing_sheet(spreadsheet_id=None):
                             row.append(flattened_item.get(h, ''))
                     all_rows2.append(row)
             
-            # ✅ FIX: Resize sheet to ensure enough rows before writing
+            # Clear old data first
+            print(f"  Clearing old data from Sheet 2...")
+            worksheet2.clear()
+            
+            # ✅ FIX: Resize sheet to exact number of rows needed (no buffer to avoid leftover data)
             total_rows_needed = len(all_rows2)
             num_cols = len(headers2)
             print(f"  Resizing Sheet 2 to {total_rows_needed} rows, {num_cols} columns...")
             try:
-                worksheet2.resize(rows=total_rows_needed + 100, cols=num_cols)  # Add 100 extra rows as buffer
-                logger.info(f"Resized Sheet 2 to {total_rows_needed + 100} rows, {num_cols} columns")
+                worksheet2.resize(rows=total_rows_needed, cols=num_cols)
+                logger.info(f"Resized Sheet 2 to {total_rows_needed} rows, {num_cols} columns")
             except Exception as e:
                 logger.warning(f"Could not resize Sheet 2: {e}. Continuing anyway...")
-            
-            worksheet2.clear()
             
             # ✅ FIX: Use update() instead of append_rows() for better reliability with large datasets
             # Write in batches using update() with A1 notation
@@ -1443,6 +1453,13 @@ def update_existing_sheet(spreadsheet_id=None):
                 # Add delay between batches to avoid rate limiting
                 if i + batch_size < len(all_rows2):  # Don't delay after last batch
                     time.sleep(SHEETS_BATCH_DELAY)
+            
+            # ✅ FIX: Resize back to exact number of rows to remove any leftover rows
+            try:
+                worksheet2.resize(rows=len(all_rows2), cols=num_cols)
+                logger.info(f"Final resize Sheet 2 to {len(all_rows2)} rows to remove leftover data")
+            except Exception as e:
+                logger.warning(f"Could not final resize Sheet 2: {e}. Continuing anyway...")
             
             # Actual row count = total rows (including header) - 1 header row
             total_rows = len(all_rows2) - 1
