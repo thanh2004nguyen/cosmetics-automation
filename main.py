@@ -8,6 +8,7 @@ from datetime import datetime
 import math
 import logging
 import sys
+import time
 
 # ==================== CONFIGURATION ====================
 # Google Sheets Configuration
@@ -17,6 +18,14 @@ CREDENTIALS_FILE = "credentials.json"
 # API Configuration
 API_URL = "https://registries.health.gov.il/api/Cosmetics/GetCosmetics"
 MAX_RESULT_PER_PAGE = 100  # Number of records per page when fetching data
+MAX_RETRIES = 3  # Number of retries for failed API calls
+RETRY_DELAY = 2  # Seconds to wait between retries
+
+# Google Sheets API Configuration
+SHEETS_BATCH_SIZE = 1000  # Reduced from 5000 to avoid 502 errors
+SHEETS_BATCH_DELAY = 1  # Seconds to wait between batches
+SHEETS_MAX_RETRIES = 5  # Number of retries for Google Sheets API calls
+SHEETS_RETRY_DELAY = 5  # Initial delay for retries (exponential backoff)
 
 # Logging Configuration
 ENABLE_LOGGING = True
@@ -48,7 +57,7 @@ else:
 
 # ==================== API FUNCTIONS ====================
 
-def get_api_data_sheet1(max_result=100, page_number=1):
+def get_api_data_sheet1(max_result=100, page_number=1, retry_count=0):
     # Get data for Sheet 1 (filtered columns) - simple API call without businessNotificationItemId and businessTypeNotificationId
     payload = {
         "isDescending": False,
@@ -59,22 +68,64 @@ def get_api_data_sheet1(max_result=100, page_number=1):
     headers = {"Content-Type": "application/json"}
     
     try:
-        response = requests.post(API_URL, json=payload, headers=headers)
+        response = requests.post(API_URL, json=payload, headers=headers, timeout=30)
         response.raise_for_status()
         data = response.json()
         
         if 'returnObject' in data and 'cosmeticsList' in data['returnObject']:
-            return {
+            result = {
                 'data': data['returnObject']['cosmeticsList'],
                 'totalRows': data['returnObject'].get('totalRows', 0),
                 'maxResults': data['returnObject'].get('maxResults', max_result)
             }
+            # Log notification codes for debugging
+            notification_codes = [item.get('notificationCode', '') for item in result['data']]
+            logger.info(f"Sheet 1 - Page {page_number}: Fetched {len(result['data'])} records. Notification codes: {notification_codes[:10]}...")  # Log first 10
+            return result
         return {'data': [], 'totalRows': 0, 'maxResults': max_result}
     except Exception as e:
-        print(f"❌ Error fetching Sheet 1 data: {e}")
-        return {'data': [], 'totalRows': 0, 'maxResults': max_result}
+        if retry_count < MAX_RETRIES:
+            logger.warning(f"Error fetching Sheet 1 data (page {page_number}), retry {retry_count + 1}/{MAX_RETRIES}: {e}")
+            time.sleep(RETRY_DELAY)
+            return get_api_data_sheet1(max_result, page_number, retry_count + 1)
+        else:
+            logger.error(f"Error fetching Sheet 1 data (page {page_number}) after {MAX_RETRIES} retries: {e}")
+            print(f"❌ Error fetching Sheet 1 data (page {page_number}): {e}")
+            return {'data': [], 'totalRows': 0, 'maxResults': max_result}
 
-def get_api_data_sheet2(max_result=100, page_number=1):
+def get_api_data_by_notification_code(notification_code, use_filter=True):
+    """
+    Query API directly by notificationCode (bypasses pagination)
+    Returns the record if found, None otherwise
+    """
+    payload = {
+        "isDescending": False,
+        "maxResult": 100,
+        "pageNumber": 0,  # API uses 0-based indexing when querying by code
+        "notificationCode": notification_code
+    }
+    
+    if use_filter:
+        payload["businessNotificationItemId"] = 34
+        payload["businessTypeNotificationId"] = 5
+    
+    headers = {"Content-Type": "application/json"}
+    
+    try:
+        response = requests.post(API_URL, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        
+        if 'returnObject' in data and 'cosmeticsList' in data['returnObject']:
+            records = data['returnObject']['cosmeticsList']
+            if records and len(records) > 0:
+                return records[0]  # Return first record
+        return None
+    except Exception as e:
+        logger.error(f"Error querying notification code {notification_code}: {e}")
+        return None
+
+def get_api_data_sheet2(max_result=100, page_number=1, retry_count=0):
     # Get data for Sheet 2 (all columns) - API call with businessNotificationItemId: 34 and businessTypeNotificationId: 5
     payload = {
         "isDescending": False,
@@ -87,31 +138,61 @@ def get_api_data_sheet2(max_result=100, page_number=1):
     headers = {"Content-Type": "application/json"}
     
     try:
-        response = requests.post(API_URL, json=payload, headers=headers)
+        response = requests.post(API_URL, json=payload, headers=headers, timeout=30)
         response.raise_for_status()
         data = response.json()
         
         if 'returnObject' in data and 'cosmeticsList' in data['returnObject']:
-            return {
+            result = {
                 'data': data['returnObject']['cosmeticsList'],
                 'totalRows': data['returnObject'].get('totalRows', 0),
                 'maxResults': data['returnObject'].get('maxResults', max_result)
             }
+            # Log notification codes for debugging
+            notification_codes = [item.get('notificationCode', '') for item in result['data']]
+            logger.info(f"Sheet 2 - Page {page_number}: Fetched {len(result['data'])} records. Notification codes: {notification_codes[:10]}...")  # Log first 10
+            return result
         return {'data': [], 'totalRows': 0, 'maxResults': max_result}
     except Exception as e:
-        print(f"❌ Error fetching Sheet 2 data: {e}")
-        return {'data': [], 'totalRows': 0, 'maxResults': max_result}
+        if retry_count < MAX_RETRIES:
+            logger.warning(f"Error fetching Sheet 2 data (page {page_number}), retry {retry_count + 1}/{MAX_RETRIES}: {e}")
+            time.sleep(RETRY_DELAY)
+            return get_api_data_sheet2(max_result, page_number, retry_count + 1)
+        else:
+            logger.error(f"Error fetching Sheet 2 data (page {page_number}) after {MAX_RETRIES} retries: {e}")
+            print(f"❌ Error fetching Sheet 2 data (page {page_number}): {e}")
+            return {'data': [], 'totalRows': 0, 'maxResults': max_result}
 
 def get_all_pages_sheet1(max_result=None):
     # Get all data from Sheet 1 via pagination
+    # ✅ FIX: Fetch until we get empty page instead of relying on totalRows
     if max_result is None:
         max_result = MAX_RESULT_PER_PAGE
     
     print("Fetching Sheet 1 data (all pages)...")
+    logger.info("Starting Sheet 1 data fetch")
     
-    # Get first page to know totalRows
+    # ✅ FIX: Try page 0 first (API might start from 0)
+    all_data = []
+    print(f"  Fetching page 0...")
+    page0_data = get_api_data_sheet1(max_result=max_result, page_number=0)
+    if page0_data['data']:
+        all_data.extend(page0_data['data'])
+        logger.info(f"Sheet 1 - Page 0: Found {len(page0_data['data'])} records")
+        print(f"    ✓ Page 0: Found {len(page0_data['data'])} records")
+    
+    # Get first page (page 1) to know totalRows (for reference only)
+    print(f"  Fetching page 1...")
     first_page = get_api_data_sheet1(max_result=max_result, page_number=1)
-    all_data = first_page['data']
+    if first_page['data']:
+        # Check for duplicates before adding
+        existing_codes = set([item.get('notificationCode', '') for item in all_data])
+        for record in first_page['data']:
+            code = record.get('notificationCode', '')
+            if code not in existing_codes:
+                all_data.append(record)
+                existing_codes.add(code)
+    
     total_rows = first_page['totalRows']
     max_results = first_page['maxResults']
     
@@ -119,30 +200,129 @@ def get_all_pages_sheet1(max_result=None):
         logger.warning("No data for Sheet 1")
         return []
     
-    # Calculate number of pages
-    total_pages = math.ceil(total_rows / max_results)
-    print(f"  Total rows: {total_rows}, Pages: {total_pages}")
+    # Calculate estimated number of pages (for reference)
+    estimated_pages = math.ceil(total_rows / max_results)
+    print(f"  Total rows (from API): {total_rows}, Estimated pages: {estimated_pages}")
+    logger.info(f"Sheet 1 - Total rows from API: {total_rows}, Estimated pages: {estimated_pages}")
     
-    # Get remaining pages
-    if total_pages > 1:
-        for page in range(2, total_pages + 1):
-            print(f"  Fetching page {page}/{total_pages}...")
-            page_data = get_api_data_sheet1(max_result=max_result, page_number=page)
+    # ✅ FIX: Fetch pages until we get empty page (more reliable than using totalRows)
+    page = 2
+    consecutive_empty_pages = 0
+    max_consecutive_empty = 2  # Stop after 2 consecutive empty pages
+    
+    while True:
+        print(f"  Fetching page {page}...")
+        page_data = get_api_data_sheet1(max_result=max_result, page_number=page)
+        
+        if page_data['data']:
+            # Got data, add to all_data
             all_data.extend(page_data['data'])
+            consecutive_empty_pages = 0  # Reset counter
+            page += 1
+            
+            # Safety limit: if we've fetched way more than expected, something's wrong
+            if page > estimated_pages * 2:
+                logger.warning(f"Sheet 1 - Fetched {page - 1} pages but estimated only {estimated_pages}. Stopping to prevent infinite loop.")
+                break
+        else:
+            # Empty page
+            consecutive_empty_pages += 1
+            logger.warning(f"Sheet 1 - Page {page} returned no data (consecutive empty: {consecutive_empty_pages})")
+            
+            if consecutive_empty_pages >= max_consecutive_empty:
+                # Stop after N consecutive empty pages
+                logger.info(f"Sheet 1 - Stopping after {consecutive_empty_pages} consecutive empty pages")
+                break
+            
+            page += 1
     
-    print(f"✓ Fetched {len(all_data)} records for Sheet 1")
+    # ✅ VERIFY: Check if we got all records
+    actual_count = len(all_data)
+    # Calculate last page with data: if we stopped due to empty pages, subtract them
+    if consecutive_empty_pages >= max_consecutive_empty:
+        last_page_with_data = page - max_consecutive_empty
+    else:
+        last_page_with_data = page - 1
+    
+    print(f"✓ Fetched {actual_count} records for Sheet 1 (from {last_page_with_data} pages)")
+    logger.info(f"Sheet 1 - Fetched {actual_count} records from {last_page_with_data} pages (API reported {total_rows})")
+    
+    if actual_count != total_rows:
+        difference = total_rows - actual_count
+        logger.warning(f"Sheet 1 - MISMATCH: API reported {total_rows} records, but fetched {actual_count} (difference: {difference})")
+        print(f"⚠ WARNING: API reported {total_rows} records, but fetched {actual_count} (difference: {difference})")
+        
+        if difference > 0:
+            print(f"\n🔍 Attempting to find missing {difference} records...")
+            logger.info(f"Sheet 1 - Attempting to find missing {difference} records")
+            
+            # Try to find missing records by:
+            # 1. Retry last few pages with more attempts
+            # 2. Check pages around the last page with data
+            # 3. Try fetching with different page numbers
+            
+            missing_records = find_missing_records_sheet1(
+                all_data, 
+                last_page_with_data, 
+                estimated_pages, 
+                max_result, 
+                difference,
+                total_rows  # Pass total_rows for analysis
+            )
+            
+            if missing_records:
+                print(f"✓ Found {len(missing_records)} additional records!")
+                logger.info(f"Sheet 1 - Found {len(missing_records)} additional records")
+                all_data.extend(missing_records)
+                actual_count = len(all_data)
+                print(f"✓ Total records after recovery: {actual_count}")
+            else:
+                print(f"   Could not find missing records. They may have been deleted or API has pagination bug.")
+                logger.warning(f"Sheet 1 - Could not recover missing {difference} records")
+    
+    # ✅ Check for duplicates
+    notification_codes = [item.get('notificationCode', '') for item in all_data]
+    unique_codes = set(notification_codes)
+    if len(notification_codes) != len(unique_codes):
+        duplicates = [code for code in notification_codes if notification_codes.count(code) > 1]
+        logger.warning(f"Sheet 1 - Found {len(notification_codes) - len(unique_codes)} duplicate notification codes: {set(duplicates)}")
+        print(f"⚠ WARNING: Found duplicate notification codes in Sheet 1")
+    
+    # ✅ Log all notification codes for debugging (only first 100 to avoid log file too large)
+    logger.info(f"Sheet 1 - All notification codes ({len(unique_codes)} unique): {sorted(list(unique_codes))[:100]}...")
+    
     return all_data
 
 def get_all_pages_sheet2(max_result=None):
     # Get all data from Sheet 2 via pagination
+    # ✅ FIX: Fetch until we get empty page instead of relying on totalRows
     if max_result is None:
         max_result = MAX_RESULT_PER_PAGE
     
     print("Fetching Sheet 2 data (all pages)...")
+    logger.info("Starting Sheet 2 data fetch")
     
-    # Get first page to know totalRows
+    # ✅ FIX: Try page 0 first (API might start from 0)
+    all_data = []
+    print(f"  Fetching page 0...")
+    page0_data = get_api_data_sheet2(max_result=max_result, page_number=0)
+    if page0_data['data']:
+        all_data.extend(page0_data['data'])
+        logger.info(f"Sheet 2 - Page 0: Found {len(page0_data['data'])} records")
+        print(f"    ✓ Page 0: Found {len(page0_data['data'])} records")
+    
+    # Get first page (page 1) to know totalRows (for reference only)
+    print(f"  Fetching page 1...")
     first_page = get_api_data_sheet2(max_result=max_result, page_number=1)
-    all_data = first_page['data']
+    if first_page['data']:
+        # Check for duplicates before adding
+        existing_codes = set([item.get('notificationCode', '') for item in all_data])
+        for record in first_page['data']:
+            code = record.get('notificationCode', '')
+            if code not in existing_codes:
+                all_data.append(record)
+                existing_codes.add(code)
+    
     total_rows = first_page['totalRows']
     max_results = first_page['maxResults']
     
@@ -150,19 +330,373 @@ def get_all_pages_sheet2(max_result=None):
         logger.warning("No data for Sheet 2")
         return []
     
-    # Calculate number of pages
-    total_pages = math.ceil(total_rows / max_results)
-    print(f"  Total rows: {total_rows}, Pages: {total_pages}")
+    # Calculate estimated number of pages (for reference)
+    estimated_pages = math.ceil(total_rows / max_results)
+    print(f"  Total rows (from API): {total_rows}, Estimated pages: {estimated_pages}")
+    logger.info(f"Sheet 2 - Total rows from API: {total_rows}, Estimated pages: {estimated_pages}")
     
-    # Get remaining pages
-    if total_pages > 1:
-        for page in range(2, total_pages + 1):
-            print(f"  Fetching page {page}/{total_pages}...")
-            page_data = get_api_data_sheet2(max_result=max_result, page_number=page)
+    # ✅ FIX: Fetch pages until we get empty page (more reliable than using totalRows)
+    page = 2
+    consecutive_empty_pages = 0
+    max_consecutive_empty = 2  # Stop after 2 consecutive empty pages
+    
+    while True:
+        print(f"  Fetching page {page}...")
+        page_data = get_api_data_sheet2(max_result=max_result, page_number=page)
+        
+        if page_data['data']:
+            # Got data, add to all_data
             all_data.extend(page_data['data'])
+            consecutive_empty_pages = 0  # Reset counter
+            page += 1
+            
+            # Safety limit: if we've fetched way more than expected, something's wrong
+            if page > estimated_pages * 2:
+                logger.warning(f"Sheet 2 - Fetched {page - 1} pages but estimated only {estimated_pages}. Stopping to prevent infinite loop.")
+                break
+        else:
+            # Empty page
+            consecutive_empty_pages += 1
+            logger.warning(f"Sheet 2 - Page {page} returned no data (consecutive empty: {consecutive_empty_pages})")
+            
+            if consecutive_empty_pages >= max_consecutive_empty:
+                # Stop after N consecutive empty pages
+                logger.info(f"Sheet 2 - Stopping after {consecutive_empty_pages} consecutive empty pages")
+                break
+            
+            page += 1
     
-    print(f"✓ Fetched {len(all_data)} records for Sheet 2")
+    # ✅ VERIFY: Check if we got all records
+    actual_count = len(all_data)
+    # Calculate last page with data: if we stopped due to empty pages, subtract them
+    if consecutive_empty_pages >= max_consecutive_empty:
+        last_page_with_data = page - max_consecutive_empty
+    else:
+        last_page_with_data = page - 1
+    
+    print(f"✓ Fetched {actual_count} records for Sheet 2 (from {last_page_with_data} pages)")
+    logger.info(f"Sheet 2 - Fetched {actual_count} records from {last_page_with_data} pages (API reported {total_rows})")
+    
+    if actual_count != total_rows:
+        difference = total_rows - actual_count
+        logger.warning(f"Sheet 2 - MISMATCH: API reported {total_rows} records, but fetched {actual_count} (difference: {difference})")
+        print(f"⚠ WARNING: API reported {total_rows} records, but fetched {actual_count} (difference: {difference})")
+        
+        if difference > 0:
+            print(f"\n🔍 Attempting to find missing {difference} records...")
+            logger.info(f"Sheet 2 - Attempting to find missing {difference} records")
+            
+            missing_records = find_missing_records_sheet2(
+                all_data, 
+                last_page_with_data, 
+                estimated_pages, 
+                max_result, 
+                difference,
+                total_rows  # Pass total_rows for analysis
+            )
+            
+            if missing_records:
+                print(f"✓ Found {len(missing_records)} additional records!")
+                logger.info(f"Sheet 2 - Found {len(missing_records)} additional records")
+                all_data.extend(missing_records)
+                actual_count = len(all_data)
+                print(f"✓ Total records after recovery: {actual_count}")
+            else:
+                print(f"   Could not find missing records. They may have been deleted or API has pagination bug.")
+                logger.warning(f"Sheet 2 - Could not recover missing {difference} records")
+    
+    # ✅ Check for duplicates
+    notification_codes = [item.get('notificationCode', '') for item in all_data]
+    unique_codes = set(notification_codes)
+    if len(notification_codes) != len(unique_codes):
+        duplicates = [code for code in notification_codes if notification_codes.count(code) > 1]
+        logger.warning(f"Sheet 2 - Found {len(notification_codes) - len(unique_codes)} duplicate notification codes: {set(duplicates)}")
+        print(f"⚠ WARNING: Found duplicate notification codes in Sheet 2")
+    
+    # ✅ Log all notification codes for debugging (only first 100 to avoid log file too large)
+    logger.info(f"Sheet 2 - All notification codes ({len(unique_codes)} unique): {sorted(list(unique_codes))[:100]}...")
+    
     return all_data
+
+# ==================== MISSING RECORDS RECOVERY ====================
+
+def find_missing_records_sheet1(existing_data, last_page_with_data, estimated_pages, max_result, expected_missing, total_rows_from_api):
+    """
+    Try to find missing records by checking pages around the last page with data
+    """
+    found_records = []
+    existing_codes = set([item.get('notificationCode', '') for item in existing_data])
+    
+    print(f"  Checking pages around page {last_page_with_data}...")
+    logger.info(f"Sheet 1 - Starting missing records search. Last page with data: {last_page_with_data}, Expected missing: {expected_missing}")
+    
+    # Strategy 1: Analyze page 551 - it only has 62 records instead of 100
+    # This suggests the missing 100 records might be in a different page or were deleted
+    print(f"  Analyzing page 551 (has 62 records, missing 38)...")
+    page_551_data = get_api_data_sheet1(max_result=max_result, page_number=551, retry_count=0)
+    page_551_codes = set([item.get('notificationCode', '') for item in page_551_data['data']])
+    logger.info(f"Sheet 1 - Page 551 has {len(page_551_data['data'])} records")
+    
+    # Strategy 2: Try fetching with reverse order (isDescending: True)
+    # This might reveal records that are at the "end" but not accessible via normal pagination
+    print(f"  Trying reverse order fetch (isDescending: True) to find missing records...")
+    try:
+        reverse_payload = {
+            "isDescending": True,  # Reverse order
+            "maxResult": max_result,
+            "pageNumber": 1
+        }
+        response = requests.post(API_URL, json=reverse_payload, headers={"Content-Type": "application/json"}, timeout=30)
+        if response.status_code == 200:
+            reverse_data = response.json()
+            if 'returnObject' in reverse_data and 'cosmeticsList' in reverse_data['returnObject']:
+                reverse_codes = set([item.get('notificationCode', '') for item in reverse_data['returnObject']['cosmeticsList']])
+                missing_in_reverse = existing_codes - reverse_codes
+                if missing_in_reverse:
+                    logger.info(f"Sheet 1 - Found {len(missing_in_reverse)} codes in normal order but not in reverse order")
+                    print(f"  Found {len(missing_in_reverse)} codes that appear in normal order but not in reverse")
+    except Exception as e:
+        logger.warning(f"Sheet 1 - Error trying reverse order: {e}")
+    
+    # Strategy 3: Retry last few pages with more attempts
+    pages_to_retry = list(range(max(1, last_page_with_data - 10), last_page_with_data + 1))
+    print(f"  Retrying last {len(pages_to_retry)} pages with multiple attempts...")
+    for page_num in pages_to_retry:
+        for attempt in range(5):  # Retry up to 5 times
+            page_data = get_api_data_sheet1(max_result=max_result, page_number=page_num, retry_count=0)
+            if page_data['data']:
+                for record in page_data['data']:
+                    code = record.get('notificationCode', '')
+                    if code and code not in existing_codes:
+                        found_records.append(record)
+                        existing_codes.add(code)
+                        logger.info(f"Sheet 1 - Found missing record {code} on page {page_num} (attempt {attempt + 1})")
+                        print(f"    ✓ Found missing record: {code} on page {page_num}")
+                if len(found_records) >= expected_missing:
+                    break
+            time.sleep(0.3)  # Small delay between retries
+        if len(found_records) >= expected_missing:
+            break
+    
+    # Strategy 4: Check if API has a different totalRows when queried again
+    print(f"  Re-checking API totalRows to see if it changed...")
+    first_page_again = get_api_data_sheet1(max_result=max_result, page_number=1, retry_count=0)
+    new_total_rows = first_page_again.get('totalRows', 0)
+    if new_total_rows != 0:
+        logger.info(f"Sheet 1 - API now reports totalRows: {new_total_rows} (previously: {total_rows_from_api})")
+        if new_total_rows != total_rows_from_api:
+            print(f"    ⚠ API totalRows changed! Now: {new_total_rows}, Previously: {total_rows_from_api}")
+            diff = total_rows_from_api - new_total_rows
+            if diff > 0:
+                print(f"    This suggests {diff} records were deleted/removed")
+            else:
+                print(f"    This suggests {abs(diff)} records were added")
+    
+    # Strategy 5: Check pages after last page (in case API has pagination bug)
+    if len(found_records) < expected_missing:
+        print(f"  Checking pages after {last_page_with_data} (up to {estimated_pages + 20})...")
+        for page_num in range(last_page_with_data + 1, min(estimated_pages + 20, last_page_with_data + 30)):
+            page_data = get_api_data_sheet1(max_result=max_result, page_number=page_num, retry_count=0)
+            if page_data['data']:
+                for record in page_data['data']:
+                    code = record.get('notificationCode', '')
+                    if code and code not in existing_codes:
+                        found_records.append(record)
+                        existing_codes.add(code)
+                        logger.info(f"Sheet 1 - Found missing record {code} on page {page_num}")
+                        print(f"    ✓ Found missing record: {code} on page {page_num}")
+                if len(found_records) >= expected_missing:
+                    break
+    
+    # Strategy 6: Check if there are duplicate records that were counted twice
+    print(f"  Checking for potential duplicate counting in API...")
+    all_codes_list = [item.get('notificationCode', '') for item in existing_data]
+    unique_codes_count = len(set(all_codes_list))
+    if len(all_codes_list) != unique_codes_count:
+        duplicates = len(all_codes_list) - unique_codes_count
+        logger.warning(f"Sheet 1 - Found {duplicates} duplicate codes in fetched data")
+        print(f"    ⚠ Found {duplicates} duplicate codes - API might be counting duplicates")
+    
+    if found_records:
+        print(f"  ✓ Found {len(found_records)} missing records!")
+    else:
+        print(f"  ✗ Could not find missing records using standard methods")
+        print(f"  📊 Analysis:")
+        print(f"     - Page 551 has 62 records (missing 38 from expected 100)")
+        print(f"     - Page 552 is empty")
+        print(f"     - Total fetched: {len(existing_data)} records")
+        print(f"     - API reported: {total_rows_from_api} records")
+        print(f"     - Difference: {expected_missing} records")
+        print(f"  💡 Possible reasons:")
+        print(f"     1. API's totalRows is inaccurate (calculated incorrectly)")
+        print(f"     2. {expected_missing} records were deleted/removed after API calculated totalRows")
+        print(f"     3. API has pagination bug that skips some records")
+        print(f"     4. Records exist but are filtered/hidden by API")
+    
+    return found_records
+
+def find_missing_records_sheet2(existing_data, last_page_with_data, estimated_pages, max_result, expected_missing, total_rows_from_api):
+    """
+    Try to find missing records by checking pages around the last page with data
+    """
+    found_records = []
+    existing_codes = set([item.get('notificationCode', '') for item in existing_data])
+    
+    print(f"  Checking pages around page {last_page_with_data}...")
+    logger.info(f"Sheet 2 - Starting missing records search. Last page with data: {last_page_with_data}, Expected missing: {expected_missing}")
+    
+    # Strategy 1: Retry last few pages with more attempts
+    pages_to_retry = list(range(max(1, last_page_with_data - 10), last_page_with_data + 1))
+    print(f"  Retrying last {len(pages_to_retry)} pages with multiple attempts...")
+    for page_num in pages_to_retry:
+        for attempt in range(5):  # Retry up to 5 times
+            page_data = get_api_data_sheet2(max_result=max_result, page_number=page_num, retry_count=0)
+            if page_data['data']:
+                for record in page_data['data']:
+                    code = record.get('notificationCode', '')
+                    if code and code not in existing_codes:
+                        found_records.append(record)
+                        existing_codes.add(code)
+                        logger.info(f"Sheet 2 - Found missing record {code} on page {page_num} (attempt {attempt + 1})")
+                        print(f"    ✓ Found missing record: {code} on page {page_num}")
+                if len(found_records) >= expected_missing:
+                    break
+            time.sleep(0.3)  # Small delay between retries
+        if len(found_records) >= expected_missing:
+            break
+    
+    # Strategy 2: Check if API has a different totalRows when queried again
+    print(f"  Re-checking API totalRows to see if it changed...")
+    first_page_again = get_api_data_sheet2(max_result=max_result, page_number=1, retry_count=0)
+    new_total_rows = first_page_again.get('totalRows', 0)
+    if new_total_rows != 0:
+        logger.info(f"Sheet 2 - API now reports totalRows: {new_total_rows} (previously: {total_rows_from_api})")
+        if new_total_rows != total_rows_from_api:
+            print(f"    ⚠ API totalRows changed! Now: {new_total_rows}, Previously: {total_rows_from_api}")
+            diff = total_rows_from_api - new_total_rows
+            if diff > 0:
+                print(f"    This suggests {diff} records were deleted/removed")
+            else:
+                print(f"    This suggests {abs(diff)} records were added")
+    
+    # Strategy 3: Check pages after last page
+    if len(found_records) < expected_missing:
+        print(f"  Checking pages after {last_page_with_data} (up to {estimated_pages + 20})...")
+        for page_num in range(last_page_with_data + 1, min(estimated_pages + 20, last_page_with_data + 30)):
+            page_data = get_api_data_sheet2(max_result=max_result, page_number=page_num, retry_count=0)
+            if page_data['data']:
+                for record in page_data['data']:
+                    code = record.get('notificationCode', '')
+                    if code and code not in existing_codes:
+                        found_records.append(record)
+                        existing_codes.add(code)
+                        logger.info(f"Sheet 2 - Found missing record {code} on page {page_num}")
+                        print(f"    ✓ Found missing record: {code} on page {page_num}")
+                if len(found_records) >= expected_missing:
+                    break
+    
+    # Strategy 4: Try querying with pageNumber = 0 (API might start from 0)
+    if len(found_records) < expected_missing:
+        print(f"  Trying pageNumber = 0 (API might start from 0 instead of 1)...")
+        try:
+            payload_page0 = {
+                "isDescending": False,
+                "maxResult": max_result,
+                "pageNumber": 0,
+                "businessNotificationItemId": 34,
+                "businessTypeNotificationId": 5
+            }
+            response = requests.post(API_URL, json=payload_page0, headers={"Content-Type": "application/json"}, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            if 'returnObject' in data and 'cosmeticsList' in data['returnObject']:
+                for record in data['returnObject']['cosmeticsList']:
+                    code = record.get('notificationCode', '')
+                    if code and code not in existing_codes:
+                        found_records.append(record)
+                        existing_codes.add(code)
+                        logger.info(f"Sheet 2 - Found missing record {code} on page 0")
+                        print(f"    ✓ Found missing record: {code} on page 0")
+        except Exception as e:
+            logger.warning(f"Sheet 2 - Error querying page 0: {e}")
+    
+    # Strategy 5: Try querying with direct notificationCode for known missing codes
+    # Known missing codes that customer reported
+    known_missing_codes = ["2042025160147", "1742025091730"]
+    if len(found_records) < expected_missing:
+        print(f"  Querying known missing notification codes directly...")
+        for code in known_missing_codes:
+            if code not in existing_codes:
+                print(f"    Querying notification code: {code}...")
+                record = get_api_data_by_notification_code(code, use_filter=True)
+                if record:
+                    found_records.append(record)
+                    existing_codes.add(code)
+                    logger.info(f"Sheet 2 - Found missing record {code} via direct query")
+                    print(f"    ✓ Found missing record: {code} via direct query")
+                else:
+                    # Try without filter
+                    record = get_api_data_by_notification_code(code, use_filter=False)
+                    if record:
+                        found_records.append(record)
+                        existing_codes.add(code)
+                        logger.info(f"Sheet 2 - Found missing record {code} via direct query (no filter)")
+                        print(f"    ✓ Found missing record: {code} via direct query (no filter)")
+                time.sleep(0.5)  # Small delay between queries
+    
+    if found_records:
+        print(f"  ✓ Found {len(found_records)} missing records!")
+    else:
+        print(f"  ✗ Could not find missing records using standard methods")
+        print(f"  📊 Analysis:")
+        print(f"     - Total fetched: {len(existing_data)} records")
+        print(f"     - API reported: {total_rows_from_api} records")
+        print(f"     - Difference: {expected_missing} records")
+        print(f"  💡 Possible reasons:")
+        print(f"     1. API's totalRows is inaccurate (calculated incorrectly)")
+        print(f"     2. {expected_missing} records were deleted/removed after API calculated totalRows")
+        print(f"     3. API has pagination bug that skips some records")
+        print(f"     4. Records exist but are filtered/hidden by API")
+    
+    return found_records
+
+# ==================== CODE VERIFICATION ====================
+
+def check_notification_code_exists(notification_code, max_pages_to_check=100):
+    """
+    Check if a specific notification code exists in API
+    Returns: (found, sheet_number) where sheet_number is 1, 2, or 0 (not found)
+    """
+    print(f"\n🔍 Checking notification code: {notification_code}")
+    logger.info(f"Checking notification code: {notification_code}")
+    
+    # Check Sheet 1 (no filter)
+    print("  Checking in Sheet 1 (no filter)...")
+    for page in range(1, min(max_pages_to_check, 100) + 1):  # Limit to 100 pages for performance
+        page_data = get_api_data_sheet1(max_result=100, page_number=page)
+        codes = [item.get('notificationCode', '') for item in page_data['data']]
+        if notification_code in codes:
+            logger.info(f"✓ Found {notification_code} in Sheet 1, page {page}")
+            print(f"  ✓ Found in Sheet 1, page {page}")
+            return (True, 1)
+        if not page_data['data']:  # Empty page, stop
+            break
+    
+    # Check Sheet 2 (with filter)
+    print("  Checking in Sheet 2 (with filter)...")
+    for page in range(1, min(max_pages_to_check, 20) + 1):  # Limit to 20 pages for performance
+        page_data = get_api_data_sheet2(max_result=100, page_number=page)
+        codes = [item.get('notificationCode', '') for item in page_data['data']]
+        if notification_code in codes:
+            logger.info(f"✓ Found {notification_code} in Sheet 2, page {page}")
+            print(f"  ✓ Found in Sheet 2, page {page}")
+            return (True, 2)
+        if not page_data['data']:  # Empty page, stop
+            break
+    
+    logger.warning(f"✗ Notification code {notification_code} NOT FOUND in API")
+    print(f"  ✗ NOT FOUND in API")
+    return (False, 0)
 
 # ==================== DATA PROCESSING ====================
 
@@ -358,10 +892,18 @@ def create_google_sheet_example(use_sample_data=True, spreadsheet_id=None):
             all_rows.append(row)
         
         # Write batch to avoid rate limit
-        batch_size = 5000
+        batch_size = SHEETS_BATCH_SIZE
+        total_batches = math.ceil(len(all_rows) / batch_size)
         for i in range(0, len(all_rows), batch_size):
             batch = all_rows[i:i + batch_size]
-            worksheet1.append_rows(batch)
+            batch_num = (i // batch_size) + 1
+            batch_name = f"Sheet 1 - Batch {batch_num}/{total_batches}"
+            print(f"  Writing {batch_name} ({len(batch)} rows)...")
+            append_rows_with_retry(worksheet1, batch, batch_name)
+            
+            # Add delay between batches to avoid rate limiting
+            if i + batch_size < len(all_rows):  # Don't delay after last batch
+                time.sleep(SHEETS_BATCH_DELAY)
         
         print(f"✓ Sheet 1: {len(sheet1_data)} rows")
         
@@ -439,10 +981,18 @@ def create_google_sheet_example(use_sample_data=True, spreadsheet_id=None):
                     all_rows2.append(row)
             
             # Write batch to avoid rate limit
-            batch_size = 5000
+            batch_size = SHEETS_BATCH_SIZE
+            total_batches = math.ceil(len(all_rows2) / batch_size)
             for i in range(0, len(all_rows2), batch_size):
                 batch = all_rows2[i:i + batch_size]
-                worksheet2.append_rows(batch)
+                batch_num = (i // batch_size) + 1
+                batch_name = f"Sheet 2 - Batch {batch_num}/{total_batches}"
+                print(f"  Writing {batch_name} ({len(batch)} rows)...")
+                append_rows_with_retry(worksheet2, batch, batch_name)
+                
+                # Add delay between batches to avoid rate limiting
+                if i + batch_size < len(all_rows2):  # Don't delay after last batch
+                    time.sleep(SHEETS_BATCH_DELAY)
             
             # Actual row count = total rows (including header) - 1 header row
             total_rows = len(all_rows2) - 1
@@ -467,6 +1017,44 @@ def create_google_sheet_example(use_sample_data=True, spreadsheet_id=None):
         import traceback
         traceback.print_exc()
         return None
+
+def append_rows_with_retry(worksheet, rows, batch_name="batch"):
+    """
+    Append rows to Google Sheet with retry logic and exponential backoff.
+    Handles 502 errors and rate limiting.
+    """
+    import gspread.exceptions
+    
+    for attempt in range(SHEETS_MAX_RETRIES):
+        try:
+            worksheet.append_rows(rows)
+            logger.info(f"✓ {batch_name}: Successfully appended {len(rows)} rows")
+            return True
+        except gspread.exceptions.APIError as e:
+            error_str = str(e)
+            # Check if it's a 502 error or rate limit error
+            if "502" in error_str or "rate limit" in error_str.lower() or "quota" in error_str.lower():
+                if attempt < SHEETS_MAX_RETRIES - 1:
+                    # Exponential backoff: 5s, 10s, 20s, 40s, 80s
+                    delay = SHEETS_RETRY_DELAY * (2 ** attempt)
+                    logger.warning(f"⚠ {batch_name}: Google Sheets API error (attempt {attempt + 1}/{SHEETS_MAX_RETRIES}): {error_str[:100]}")
+                    logger.info(f"  Retrying in {delay} seconds...")
+                    print(f"⚠ {batch_name}: API error, retrying in {delay}s... (attempt {attempt + 1}/{SHEETS_MAX_RETRIES})")
+                    time.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"❌ {batch_name}: Failed after {SHEETS_MAX_RETRIES} attempts: {error_str[:200]}")
+                    raise
+            else:
+                # Other errors, don't retry
+                logger.error(f"❌ {batch_name}: Non-retryable error: {error_str[:200]}")
+                raise
+        except Exception as e:
+            # Other exceptions, don't retry
+            logger.error(f"❌ {batch_name}: Unexpected error: {str(e)[:200]}")
+            raise
+    
+    return False
 
 def update_existing_sheet(spreadsheet_id=None):
     # Update data to existing Google Sheet - used for automation, runs monthly
@@ -493,6 +1081,56 @@ def update_existing_sheet(spreadsheet_id=None):
         data_sheet1 = get_all_pages_sheet1()
         data_sheet2 = get_all_pages_sheet2()
         
+        # ✅ Compare notification codes between sheets
+        codes_sheet1 = set([item.get('notificationCode', '') for item in data_sheet1])
+        codes_sheet2 = set([item.get('notificationCode', '') for item in data_sheet2])
+        
+        # Find codes in Sheet 2 but not in Sheet 1
+        missing_in_sheet1 = codes_sheet2 - codes_sheet1
+        if missing_in_sheet1:
+            logger.warning(f"Found {len(missing_in_sheet1)} notification codes in Sheet 2 but not in Sheet 1")
+            print(f"⚠ WARNING: Found {len(missing_in_sheet1)} notification codes in Sheet 2 but not in Sheet 1")
+            # This is expected because Sheet 2 has filter, so some codes might be filtered out
+        
+        # Find codes in Sheet 1 but not in Sheet 2
+        missing_in_sheet2 = codes_sheet1 - codes_sheet2
+        if missing_in_sheet2:
+            logger.info(f"Found {len(missing_in_sheet2)} notification codes in Sheet 1 but not in Sheet 2")
+            print(f"ℹ INFO: Found {len(missing_in_sheet2)} notification codes in Sheet 1 but not in Sheet 2")
+            print(f"   This is EXPECTED because Sheet 2 has filter (businessNotificationItemId: 34, businessTypeNotificationId: 5)")
+            print(f"   Sheet 2 only shows records matching the filter criteria.")
+        
+        # Check for specific missing codes mentioned by client
+        client_missing_codes = ['2042025160147', '1742025091730']
+        print(f"\n🔍 Checking specific notification codes mentioned by client...")
+        for code in client_missing_codes:
+            found_in_sheet1 = code in codes_sheet1
+            found_in_sheet2 = code in codes_sheet2
+            
+            if found_in_sheet1 and found_in_sheet2:
+                logger.info(f"✓ Notification code {code} found in BOTH sheets")
+                print(f"✓ Notification code {code} found in BOTH sheets")
+            elif found_in_sheet1:
+                logger.warning(f"⚠ Notification code {code} found in Sheet 1 but NOT in Sheet 2 (filtered out)")
+                print(f"⚠ Notification code {code} found in Sheet 1 but NOT in Sheet 2")
+                print(f"   This is expected - Sheet 2 has filter that excludes this code")
+            elif found_in_sheet2:
+                logger.warning(f"⚠ Notification code {code} found in Sheet 2 but NOT in Sheet 1 (unexpected)")
+                print(f"⚠ Notification code {code} found in Sheet 2 but NOT in Sheet 1")
+            else:
+                # Not found in scraped data, check API directly
+                logger.warning(f"✗ Notification code {code} NOT FOUND in scraped data. Checking API directly...")
+                print(f"✗ Notification code {code} NOT FOUND in scraped data. Checking API directly...")
+                found, sheet_num = check_notification_code_exists(code, max_pages_to_check=50)
+                if found:
+                    logger.error(f"CRITICAL: Code {code} EXISTS in API (Sheet {sheet_num}) but was NOT scraped!")
+                    print(f"❌ CRITICAL: Code {code} EXISTS in API but was NOT scraped!")
+                    print(f"   This indicates a scraping issue - the code exists but wasn't fetched.")
+                else:
+                    logger.warning(f"Code {code} does NOT exist in API - it may have been deleted or never existed")
+                    print(f"ℹ Code {code} does NOT exist in API - it may have been deleted or never existed")
+                    print(f"   Please verify on the website: https://registries.health.gov.il/Cosmetics")
+        
         # Update Sheet 1
         worksheet1 = spreadsheet.worksheet("Sheet1_Filtered")
         sheet1_data = extract_sheet1_fields(data_sheet1)
@@ -515,13 +1153,22 @@ def update_existing_sheet(spreadsheet_id=None):
             ]
             all_rows.append(row)
         
-        # Write batch to avoid rate limit (write 5000 rows each time)
-        batch_size = 5000
+        # Write batch to avoid rate limit (write SHEETS_BATCH_SIZE rows each time)
+        batch_size = SHEETS_BATCH_SIZE
+        total_batches = math.ceil(len(all_rows) / batch_size)
         for i in range(0, len(all_rows), batch_size):
             batch = all_rows[i:i + batch_size]
-            worksheet1.append_rows(batch)
+            batch_num = (i // batch_size) + 1
+            batch_name = f"Sheet 1 - Batch {batch_num}/{total_batches}"
+            print(f"  Writing {batch_name} ({len(batch)} rows)...")
+            append_rows_with_retry(worksheet1, batch, batch_name)
+            
+            # Add delay between batches to avoid rate limiting
+            if i + batch_size < len(all_rows):  # Don't delay after last batch
+                time.sleep(SHEETS_BATCH_DELAY)
         
         print(f"✓ Updated Sheet 1: {len(sheet1_data)} rows")
+        logger.info(f"Updated Sheet 1: {len(sheet1_data)} rows")
         
         # Update Sheet 2
         worksheet2 = spreadsheet.worksheet("Sheet2_AllColumns")
@@ -592,15 +1239,24 @@ def update_existing_sheet(spreadsheet_id=None):
             
             worksheet2.clear()
             
-            # Write batch to avoid rate limit (write 5000 rows each time)
-            batch_size = 5000
+            # Write batch to avoid rate limit (write SHEETS_BATCH_SIZE rows each time)
+            batch_size = SHEETS_BATCH_SIZE
+            total_batches = math.ceil(len(all_rows2) / batch_size)
             for i in range(0, len(all_rows2), batch_size):
                 batch = all_rows2[i:i + batch_size]
-                worksheet2.append_rows(batch)
+                batch_num = (i // batch_size) + 1
+                batch_name = f"Sheet 2 - Batch {batch_num}/{total_batches}"
+                print(f"  Writing {batch_name} ({len(batch)} rows)...")
+                append_rows_with_retry(worksheet2, batch, batch_name)
+                
+                # Add delay between batches to avoid rate limiting
+                if i + batch_size < len(all_rows2):  # Don't delay after last batch
+                    time.sleep(SHEETS_BATCH_DELAY)
             
             # Actual row count = total rows (including header) - 1 header row
             total_rows = len(all_rows2) - 1
             print(f"✓ Updated Sheet 2: {total_rows} rows (from {len(data_sheet2)} items)")
+            logger.info(f"Updated Sheet 2: {total_rows} rows (from {len(data_sheet2)} items)")
         else:
             logger.warning("No data for Sheet 2")
         
@@ -642,4 +1298,3 @@ if __name__ == "__main__":
             sys.exit(1)
         
         update_existing_sheet()
-
