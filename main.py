@@ -288,7 +288,34 @@ def get_all_pages_sheet1(max_result=None):
         logger.warning(f"Sheet 1 - Found {len(notification_codes) - len(unique_codes)} duplicate notification codes: {set(duplicates)}")
         print(f"⚠ WARNING: Found duplicate notification codes in Sheet 1")
     
+    # ✅ ALWAYS check for specific missing codes reported by client (even if count matches)
+    known_missing_codes = ["2042025160147", "1742025091730", "1742025093606", "2042025153631"]
+    existing_codes = set(notification_codes)
+    added_codes = []
+    
+    for code in known_missing_codes:
+        if code not in existing_codes:
+            print(f"  🔍 Checking known missing code: {code}...")
+            # Query directly without filter (Sheet 1 has no filter)
+            record = get_api_data_by_notification_code(code, use_filter=False)
+            if record:
+                all_data.append(record)
+                existing_codes.add(code)
+                added_codes.append(code)
+                logger.info(f"Sheet 1 - Added missing record {code} via direct query (no filter)")
+                print(f"    ✓ Added missing record: {code} (found in API without filter)")
+            else:
+                logger.warning(f"Sheet 1 - Code {code} not found in API (no filter)")
+                print(f"    ✗ Code {code} not found in API")
+            time.sleep(0.3)  # Small delay between queries
+    
+    if added_codes:
+        print(f"  ✓ Added {len(added_codes)} missing records to Sheet 1: {added_codes}")
+        logger.info(f"Sheet 1 - Added {len(added_codes)} missing records: {added_codes}")
+    
     # ✅ Log all notification codes for debugging (only first 100 to avoid log file too large)
+    final_codes = [item.get('notificationCode', '') for item in all_data]
+    unique_codes = set(final_codes)
     logger.info(f"Sheet 1 - All notification codes ({len(unique_codes)} unique): {sorted(list(unique_codes))[:100]}...")
     
     return all_data
@@ -413,7 +440,40 @@ def get_all_pages_sheet2(max_result=None):
         logger.warning(f"Sheet 2 - Found {len(notification_codes) - len(unique_codes)} duplicate notification codes: {set(duplicates)}")
         print(f"⚠ WARNING: Found duplicate notification codes in Sheet 2")
     
+    # ✅ ALWAYS check for specific missing codes reported by client (even if count matches)
+    known_missing_codes = ["2042025160147", "1742025091730", "1742025093606", "2042025153631"]
+    existing_codes = set(notification_codes)
+    added_codes = []
+    
+    for code in known_missing_codes:
+        if code not in existing_codes:
+            print(f"  🔍 Checking known missing code: {code}...")
+            # Try with filter first (Sheet 2 filter)
+            record = get_api_data_by_notification_code(code, use_filter=True)
+            if record:
+                all_data.append(record)
+                existing_codes.add(code)
+                added_codes.append(code)
+                logger.info(f"Sheet 2 - Added missing record {code} via direct query (with filter)")
+                print(f"    ✓ Added missing record: {code} (found with Sheet 2 filter)")
+            else:
+                # Try without filter - if found, it means it doesn't match Sheet 2 filter
+                record = get_api_data_by_notification_code(code, use_filter=False)
+                if record:
+                    logger.warning(f"Sheet 2 - Code {code} exists but does NOT match Sheet 2 filter (businessNotificationItemId=34, businessTypeNotificationId=5)")
+                    print(f"    ⚠ Code {code} exists but does NOT match Sheet 2 filter criteria")
+                else:
+                    logger.warning(f"Sheet 2 - Code {code} not found in API")
+                    print(f"    ✗ Code {code} not found in API")
+            time.sleep(0.3)  # Small delay between queries
+    
+    if added_codes:
+        print(f"  ✓ Added {len(added_codes)} missing records: {added_codes}")
+        logger.info(f"Sheet 2 - Added {len(added_codes)} missing records: {added_codes}")
+    
     # ✅ Log all notification codes for debugging (only first 100 to avoid log file too large)
+    final_codes = [item.get('notificationCode', '') for item in all_data]
+    unique_codes = set(final_codes)
     logger.info(f"Sheet 2 - All notification codes ({len(unique_codes)} unique): {sorted(list(unique_codes))[:100]}...")
     
     return all_data
@@ -622,7 +682,7 @@ def find_missing_records_sheet2(existing_data, last_page_with_data, estimated_pa
     
     # Strategy 5: Try querying with direct notificationCode for known missing codes
     # Known missing codes that customer reported
-    known_missing_codes = ["2042025160147", "1742025091730"]
+    known_missing_codes = ["2042025160147", "1742025091730", "1742025093606", "2042025153631"]
     if len(found_records) < expected_missing:
         print(f"  Querying known missing notification codes directly...")
         for code in known_missing_codes:
@@ -1085,12 +1145,50 @@ def update_existing_sheet(spreadsheet_id=None):
         codes_sheet1 = set([item.get('notificationCode', '') for item in data_sheet1])
         codes_sheet2 = set([item.get('notificationCode', '') for item in data_sheet2])
         
-        # Find codes in Sheet 2 but not in Sheet 1
+        print(f"\n📊 Comparing notification codes between sheets...")
+        print(f"   Sheet 1: {len(codes_sheet1)} unique codes")
+        print(f"   Sheet 2: {len(codes_sheet2)} unique codes")
+        
+        # ✅ CRITICAL FIX: Find codes in Sheet 2 but not in Sheet 1, then query and add them
         missing_in_sheet1 = codes_sheet2 - codes_sheet1
+        print(f"   Codes in Sheet 2 but NOT in Sheet 1: {len(missing_in_sheet1)}")
+        
         if missing_in_sheet1:
             logger.warning(f"Found {len(missing_in_sheet1)} notification codes in Sheet 2 but not in Sheet 1")
             print(f"⚠ WARNING: Found {len(missing_in_sheet1)} notification codes in Sheet 2 but not in Sheet 1")
-            # This is expected because Sheet 2 has filter, so some codes might be filtered out
+            print(f"   Querying missing codes from API to add to Sheet 1...")
+            
+            added_to_sheet1 = []
+            for code in missing_in_sheet1:
+                print(f"  🔍 Querying code {code} from API (no filter)...")
+                # Query directly without filter (Sheet 1 has no filter)
+                record = get_api_data_by_notification_code(code, use_filter=False)
+                if record:
+                    # Check if not already added (avoid duplicates)
+                    if code not in codes_sheet1:
+                        data_sheet1.append(record)
+                        codes_sheet1.add(code)
+                        added_to_sheet1.append(code)
+                        logger.info(f"Added code {code} to Sheet 1 from API (no filter)")
+                        print(f"    ✓ Added code {code} to Sheet 1")
+                    else:
+                        print(f"    ⚠ Code {code} already exists in Sheet 1 (duplicate check)")
+                else:
+                    logger.warning(f"Code {code} not found in API (no filter) - may have been deleted")
+                    print(f"    ✗ Code {code} not found in API")
+                time.sleep(0.3)  # Small delay between queries
+            
+            if added_to_sheet1:
+                print(f"  ✓ Added {len(added_to_sheet1)} missing records to Sheet 1: {added_to_sheet1[:10]}...")
+                logger.info(f"Added {len(added_to_sheet1)} missing records to Sheet 1: {added_to_sheet1}")
+                # Update data_sheet1 count
+                original_count = len(data_sheet1) - len(added_to_sheet1)
+                print(f"  📊 Sheet 1 now has {len(data_sheet1)} records (was {original_count})")
+            else:
+                print(f"  ℹ No records were added (they may have been deleted from API or already exist)")
+        else:
+            print(f"  ✅ All codes in Sheet 2 are already in Sheet 1!")
+            logger.info("All codes in Sheet 2 are already in Sheet 1 - no missing records")
         
         # Find codes in Sheet 1 but not in Sheet 2
         missing_in_sheet2 = codes_sheet1 - codes_sheet2
@@ -1101,7 +1199,7 @@ def update_existing_sheet(spreadsheet_id=None):
             print(f"   Sheet 2 only shows records matching the filter criteria.")
         
         # Check for specific missing codes mentioned by client
-        client_missing_codes = ['2042025160147', '1742025091730']
+        client_missing_codes = ['2042025160147', '1742025091730', '1742025093606', '2042025153631']
         print(f"\n🔍 Checking specific notification codes mentioned by client...")
         for code in client_missing_codes:
             found_in_sheet1 = code in codes_sheet1
@@ -1135,11 +1233,8 @@ def update_existing_sheet(spreadsheet_id=None):
         worksheet1 = spreadsheet.worksheet("Sheet1_Filtered")
         sheet1_data = extract_sheet1_fields(data_sheet1)
         
-        # Clear and write again
-        worksheet1.clear()
-        headers1 = ['nameCosmeticHeb', 'nameCosmeticEng', 'notificationCode', 'importTrack', 'rpCorporation', 'manufacturer', 'importer']
-        
         # Prepare all rows for batch write
+        headers1 = ['nameCosmeticHeb', 'nameCosmeticEng', 'notificationCode', 'importTrack', 'rpCorporation', 'manufacturer', 'importer']
         all_rows = [headers1]  # Header row
         for item in sheet1_data:
             row = [
@@ -1153,15 +1248,58 @@ def update_existing_sheet(spreadsheet_id=None):
             ]
             all_rows.append(row)
         
-        # Write batch to avoid rate limit (write SHEETS_BATCH_SIZE rows each time)
+        # ✅ FIX: Resize sheet to ensure enough rows before writing
+        total_rows_needed = len(all_rows)
+        print(f"  Resizing Sheet 1 to {total_rows_needed} rows...")
+        try:
+            worksheet1.resize(rows=total_rows_needed + 100, cols=len(headers1))  # Add 100 extra rows as buffer
+            logger.info(f"Resized Sheet 1 to {total_rows_needed + 100} rows")
+        except Exception as e:
+            logger.warning(f"Could not resize Sheet 1: {e}. Continuing anyway...")
+        
+        # Clear and write again
+        worksheet1.clear()
+        
+        # ✅ FIX: Use update() instead of append_rows() for better reliability with large datasets
+        # Write in batches using update() with A1 notation
         batch_size = SHEETS_BATCH_SIZE
         total_batches = math.ceil(len(all_rows) / batch_size)
+        
         for i in range(0, len(all_rows), batch_size):
             batch = all_rows[i:i + batch_size]
             batch_num = (i // batch_size) + 1
             batch_name = f"Sheet 1 - Batch {batch_num}/{total_batches}"
-            print(f"  Writing {batch_name} ({len(batch)} rows)...")
-            append_rows_with_retry(worksheet1, batch, batch_name)
+            
+            # Calculate range for this batch (A1 notation)
+            start_row = i + 1  # +1 because A1 notation is 1-based
+            end_row = min(i + batch_size, len(all_rows))
+            range_name = f"A{start_row}:G{end_row}"  # G is column 7 (nameCosmeticHeb to importer)
+            
+            print(f"  Writing {batch_name} ({len(batch)} rows) to range {range_name}...")
+            
+            try:
+                worksheet1.update(range_name, batch, value_input_option='RAW')
+                logger.info(f"✓ {batch_name}: Successfully updated {len(batch)} rows at {range_name}")
+            except Exception as e:
+                error_str = str(e)
+                if "502" in error_str or "rate limit" in error_str.lower() or "quota" in error_str.lower():
+                    # Retry with exponential backoff
+                    for attempt in range(SHEETS_MAX_RETRIES):
+                        delay = SHEETS_RETRY_DELAY * (2 ** attempt)
+                        logger.warning(f"⚠ {batch_name}: Google Sheets API error (attempt {attempt + 1}/{SHEETS_MAX_RETRIES}): {error_str[:100]}")
+                        print(f"⚠ {batch_name}: API error, retrying in {delay}s... (attempt {attempt + 1}/{SHEETS_MAX_RETRIES})")
+                        time.sleep(delay)
+                        try:
+                            worksheet1.update(range_name, batch, value_input_option='RAW')
+                            logger.info(f"✓ {batch_name}: Successfully updated after retry")
+                            break
+                        except Exception as retry_e:
+                            if attempt == SHEETS_MAX_RETRIES - 1:
+                                logger.error(f"❌ {batch_name}: Failed after {SHEETS_MAX_RETRIES} attempts")
+                                raise
+                else:
+                    logger.error(f"❌ {batch_name}: Non-retryable error: {error_str[:200]}")
+                    raise
             
             # Add delay between batches to avoid rate limiting
             if i + batch_size < len(all_rows):  # Don't delay after last batch
@@ -1237,17 +1375,70 @@ def update_existing_sheet(spreadsheet_id=None):
                             row.append(flattened_item.get(h, ''))
                     all_rows2.append(row)
             
+            # ✅ FIX: Resize sheet to ensure enough rows before writing
+            total_rows_needed = len(all_rows2)
+            num_cols = len(headers2)
+            print(f"  Resizing Sheet 2 to {total_rows_needed} rows, {num_cols} columns...")
+            try:
+                worksheet2.resize(rows=total_rows_needed + 100, cols=num_cols)  # Add 100 extra rows as buffer
+                logger.info(f"Resized Sheet 2 to {total_rows_needed + 100} rows, {num_cols} columns")
+            except Exception as e:
+                logger.warning(f"Could not resize Sheet 2: {e}. Continuing anyway...")
+            
             worksheet2.clear()
             
-            # Write batch to avoid rate limit (write SHEETS_BATCH_SIZE rows each time)
+            # ✅ FIX: Use update() instead of append_rows() for better reliability with large datasets
+            # Write in batches using update() with A1 notation
             batch_size = SHEETS_BATCH_SIZE
             total_batches = math.ceil(len(all_rows2) / batch_size)
+            
+            # Calculate last column letter (A=1, B=2, ..., Z=26, AA=27, etc.)
+            def get_column_letter(col_num):
+                """Convert column number to letter (1->A, 2->B, ..., 27->AA)"""
+                result = ""
+                while col_num > 0:
+                    col_num -= 1
+                    result = chr(65 + (col_num % 26)) + result
+                    col_num //= 26
+                return result
+            
+            last_col_letter = get_column_letter(num_cols)
+            
             for i in range(0, len(all_rows2), batch_size):
                 batch = all_rows2[i:i + batch_size]
                 batch_num = (i // batch_size) + 1
                 batch_name = f"Sheet 2 - Batch {batch_num}/{total_batches}"
-                print(f"  Writing {batch_name} ({len(batch)} rows)...")
-                append_rows_with_retry(worksheet2, batch, batch_name)
+                
+                # Calculate range for this batch (A1 notation)
+                start_row = i + 1  # +1 because A1 notation is 1-based
+                end_row = min(i + batch_size, len(all_rows2))
+                range_name = f"A{start_row}:{last_col_letter}{end_row}"
+                
+                print(f"  Writing {batch_name} ({len(batch)} rows) to range {range_name}...")
+                
+                try:
+                    worksheet2.update(range_name, batch, value_input_option='RAW')
+                    logger.info(f"✓ {batch_name}: Successfully updated {len(batch)} rows at {range_name}")
+                except Exception as e:
+                    error_str = str(e)
+                    if "502" in error_str or "rate limit" in error_str.lower() or "quota" in error_str.lower():
+                        # Retry with exponential backoff
+                        for attempt in range(SHEETS_MAX_RETRIES):
+                            delay = SHEETS_RETRY_DELAY * (2 ** attempt)
+                            logger.warning(f"⚠ {batch_name}: Google Sheets API error (attempt {attempt + 1}/{SHEETS_MAX_RETRIES}): {error_str[:100]}")
+                            print(f"⚠ {batch_name}: API error, retrying in {delay}s... (attempt {attempt + 1}/{SHEETS_MAX_RETRIES})")
+                            time.sleep(delay)
+                            try:
+                                worksheet2.update(range_name, batch, value_input_option='RAW')
+                                logger.info(f"✓ {batch_name}: Successfully updated after retry")
+                                break
+                            except Exception as retry_e:
+                                if attempt == SHEETS_MAX_RETRIES - 1:
+                                    logger.error(f"❌ {batch_name}: Failed after {SHEETS_MAX_RETRIES} attempts")
+                                    raise
+                    else:
+                        logger.error(f"❌ {batch_name}: Non-retryable error: {error_str[:200]}")
+                        raise
                 
                 # Add delay between batches to avoid rate limiting
                 if i + batch_size < len(all_rows2):  # Don't delay after last batch
