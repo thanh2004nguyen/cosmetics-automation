@@ -1248,9 +1248,16 @@ def update_existing_sheet(spreadsheet_id=None):
             ]
             all_rows.append(row)
         
-        # Clear old data first
+        # ✅ FIX: Clear old data and resize to 1 row first to remove all old rows
         print(f"  Clearing old data from Sheet 1...")
         worksheet1.clear()
+        
+        # Resize to 1 row first to remove all old rows completely
+        try:
+            worksheet1.resize(rows=1, cols=len(headers1))
+            logger.info(f"Resized Sheet 1 to 1 row to remove all old data")
+        except Exception as e:
+            logger.warning(f"Could not resize Sheet 1 to 1 row: {e}. Continuing anyway...")
         
         # ✅ FIX: Resize sheet to exact number of rows needed (no buffer to avoid leftover data)
         total_rows_needed = len(all_rows)
@@ -1306,12 +1313,22 @@ def update_existing_sheet(spreadsheet_id=None):
             if i + batch_size < len(all_rows):  # Don't delay after last batch
                 time.sleep(SHEETS_BATCH_DELAY)
         
-        # ✅ FIX: Resize back to exact number of rows to remove any leftover rows
+        # ✅ FIX: Delete any leftover rows after the last data row
         try:
-            worksheet1.resize(rows=len(all_rows), cols=len(headers1))
-            logger.info(f"Final resize Sheet 1 to {len(all_rows)} rows to remove leftover data")
+            current_row_count = worksheet1.row_count
+            if current_row_count > len(all_rows):
+                rows_to_delete = current_row_count - len(all_rows)
+                print(f"  Deleting {rows_to_delete} leftover rows from Sheet 1...")
+                # Delete rows from len(all_rows)+1 to end (1-indexed, so len(all_rows)+1)
+                worksheet1.delete_rows(len(all_rows) + 1, current_row_count)
+                logger.info(f"Deleted {rows_to_delete} leftover rows from Sheet 1")
         except Exception as e:
-            logger.warning(f"Could not final resize Sheet 1: {e}. Continuing anyway...")
+            logger.warning(f"Could not delete leftover rows from Sheet 1: {e}. Trying resize instead...")
+            try:
+                worksheet1.resize(rows=len(all_rows), cols=len(headers1))
+                logger.info(f"Final resize Sheet 1 to {len(all_rows)} rows to remove leftover data")
+            except Exception as resize_e:
+                logger.warning(f"Could not final resize Sheet 1: {resize_e}. Continuing anyway...")
         
         print(f"✓ Updated Sheet 1: {len(sheet1_data)} rows")
         logger.info(f"Updated Sheet 1: {len(sheet1_data)} rows")
@@ -1383,13 +1400,20 @@ def update_existing_sheet(spreadsheet_id=None):
                             row.append(flattened_item.get(h, ''))
                     all_rows2.append(row)
             
-            # Clear old data first
+            # ✅ FIX: Clear old data and resize to 1 row first to remove all old rows
             print(f"  Clearing old data from Sheet 2...")
             worksheet2.clear()
             
+            # Resize to 1 row first to remove all old rows completely
+            num_cols = len(headers2)
+            try:
+                worksheet2.resize(rows=1, cols=num_cols)
+                logger.info(f"Resized Sheet 2 to 1 row to remove all old data")
+            except Exception as e:
+                logger.warning(f"Could not resize Sheet 2 to 1 row: {e}. Continuing anyway...")
+            
             # ✅ FIX: Resize sheet to exact number of rows needed (no buffer to avoid leftover data)
             total_rows_needed = len(all_rows2)
-            num_cols = len(headers2)
             print(f"  Resizing Sheet 2 to {total_rows_needed} rows, {num_cols} columns...")
             try:
                 worksheet2.resize(rows=total_rows_needed, cols=num_cols)
@@ -1454,12 +1478,22 @@ def update_existing_sheet(spreadsheet_id=None):
                 if i + batch_size < len(all_rows2):  # Don't delay after last batch
                     time.sleep(SHEETS_BATCH_DELAY)
             
-            # ✅ FIX: Resize back to exact number of rows to remove any leftover rows
+            # ✅ FIX: Delete any leftover rows after the last data row
             try:
-                worksheet2.resize(rows=len(all_rows2), cols=num_cols)
-                logger.info(f"Final resize Sheet 2 to {len(all_rows2)} rows to remove leftover data")
+                current_row_count = worksheet2.row_count
+                if current_row_count > len(all_rows2):
+                    rows_to_delete = current_row_count - len(all_rows2)
+                    print(f"  Deleting {rows_to_delete} leftover rows from Sheet 2...")
+                    # Delete rows from len(all_rows2)+1 to end (1-indexed, so len(all_rows2)+1)
+                    worksheet2.delete_rows(len(all_rows2) + 1, current_row_count)
+                    logger.info(f"Deleted {rows_to_delete} leftover rows from Sheet 2")
             except Exception as e:
-                logger.warning(f"Could not final resize Sheet 2: {e}. Continuing anyway...")
+                logger.warning(f"Could not delete leftover rows from Sheet 2: {e}. Trying resize instead...")
+                try:
+                    worksheet2.resize(rows=len(all_rows2), cols=num_cols)
+                    logger.info(f"Final resize Sheet 2 to {len(all_rows2)} rows to remove leftover data")
+                except Exception as resize_e:
+                    logger.warning(f"Could not final resize Sheet 2: {resize_e}. Continuing anyway...")
             
             # Actual row count = total rows (including header) - 1 header row
             total_rows = len(all_rows2) - 1
